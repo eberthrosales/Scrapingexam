@@ -17,9 +17,14 @@ class NewsScraper:
     genérico (BBC, RPP, El Comercio, CNN, etc.) sin selectores hardcodeados.
     """
 
-    ARTICLE_LINK_CLASSES = ['headline', 'title', 'article', 'news', 'nota', 'noticia', 'story']
-    ARTICLE_URL_PATTERNS = ['/noticia/', '/articulo/', '/news/', '/article/', '/nota/']
+    ARTICLE_LINK_CLASSES = ['headline', 'title', 'article', 'news', 'nota', 'noticia', 'story',
+                            'card', 'entry', 'post', 'item', 'extend-link', 'link']
+    ARTICLE_URL_PATTERNS = ['/noticia/', '/articulo/', '/news/', '/article/', '/nota/',
+                            '/opinion/', '/politica/', '/economia/', '/sociedad/',
+                            '/deportes/', '/mundo/', '/tecnologia/', '/cultura/',
+                            '/espectaculos/', '/tendencias/', '/actualidad/']
     YEAR_PATTERN = re.compile(r'/20\d{2}/')
+    DATE_PATH_PATTERN = re.compile(r'/\d{4}/\d{2}/\d{2}/')
 
     DATE_REGEXES = [
         re.compile(r'\d{4}-\d{2}-\d{2}'),                          # 2025-04-15
@@ -47,7 +52,10 @@ class NewsScraper:
         """
         Extrae artículos de una sección/listado de noticias.
         Detecta automáticamente si la página es estática o dinámica.
+        Si el modo estático no encuentra artículos, reintenta con dinámico.
         """
+        base_domain = self._get_base_domain(url)
+
         # Obtener HTML de la página de listado
         mode = detect_page_type(url)
         if mode == "static":
@@ -59,10 +67,16 @@ class NewsScraper:
             return []
 
         html = result["html"]
-        base_domain = self._get_base_domain(url)
 
         # Encontrar links a artículos individuales
         article_links = self._find_article_links(html, url, base_domain)
+
+        # FALLBACK: Si el modo estático no encontró artículos, reintentar con dinámico
+        if not article_links and mode == "static":
+            result = scrape_dynamic(url)
+            if not result.get("error") and result.get("html"):
+                html = result["html"]
+                article_links = self._find_article_links(html, url, base_domain)
 
         # Limitar y deduplicar
         seen: set[str] = set()
@@ -359,28 +373,45 @@ class NewsScraper:
             if a.find_parent("article"):
                 score += 10
 
-            # Heurística 2: Clases del link o su padre contienen palabras clave
-            el_classes = " ".join(a.get("class", []) + (a.parent.get("class", []) if a.parent else []))
+            # Heurística 2: Clases del link o su padre/abuelo contienen palabras clave
+            link_classes = a.get("class", [])
+            parent_classes = a.parent.get("class", []) if a.parent else []
+            grandparent_classes = a.parent.parent.get("class", []) if a.parent and a.parent.parent else []
+            el_classes = " ".join(link_classes + parent_classes + grandparent_classes)
             if any(cls in el_classes.lower() for cls in self.ARTICLE_LINK_CLASSES):
                 score += 8
 
-            # Heurística 3: URL contiene patrones de artículo
+            # Heurística 3: URL contiene secciones de noticias conocidas
             if any(pattern in full_url.lower() for pattern in self.ARTICLE_URL_PATTERNS):
-                score += 7
-            if self.YEAR_PATTERN.search(full_url):
+                score += 4
+
+            # Heurística 4: URL contiene patrón de fecha /YYYY/MM/DD/ (MUY fuerte indicador)
+            if self.DATE_PATH_PATTERN.search(full_url):
+                score += 10
+            elif self.YEAR_PATTERN.search(full_url):
                 score += 5
 
-            # Heurística 4: Está dentro de <h2> o <h3>
-            if a.find_parent("h2") or a.find_parent("h3"):
+            # Heurística 5: Está dentro de <h1>, <h2> o <h3>
+            if a.find_parent("h1") or a.find_parent("h2") or a.find_parent("h3"):
                 score += 6
 
-            # Heurística 5: Tiene texto significativo (un titular)
+            # Heurística 6: Tiene texto significativo (un titular)
             text = a.get_text(strip=True)
             if len(text) > 20:
                 score += 3
+            elif len(text) > 10:
+                score += 1
 
-            if score >= 3:
-                # Si ya existe el link, sumar puntaje
+            # Heurística 7: URL es larga (los artículos tienen slugs largos)
+            if len(path) > 30:
+                score += 2
+
+            # Heurística 8: Link tiene atributo title con texto largo
+            title_attr = a.get("title", "")
+            if len(title_attr) > 15:
+                score += 3
+
+            if score >= 2:
                 if full_url in scored_links:
                     scored_links[full_url] = max(scored_links[full_url], score)
                 else:
