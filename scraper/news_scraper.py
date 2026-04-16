@@ -266,7 +266,14 @@ class NewsScraper:
 
         # Eliminar elementos con clases de ruido
         for el in container.find_all(True):
-            classes = " ".join(el.get("class", []))
+            if not getattr(el, 'attrs', None):
+                continue
+            cls_attr = el.get("class", [])
+            if isinstance(cls_attr, str):
+                cls_attr = [cls_attr]
+            elif not isinstance(cls_attr, list):
+                cls_attr = []
+            classes = " ".join(cls_attr)
             if any(noise in classes.lower() for noise in self.NOISE_CLASSES):
                 el.decompose()
 
