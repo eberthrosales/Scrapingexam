@@ -5,3 +5,5 @@ playwright
 validators
 aiohttp
 pandas
+anthropic
+openpyxl
