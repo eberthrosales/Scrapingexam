@@ -81,7 +81,7 @@ def main():
 
         st.divider()
         st.subheader("Modo Portal de Datos Abiertos")
-        use_ckan = st.checkbox("⚡ Usar API CKAN directa (más rápido)", value=False, help="Solo funciona con datosabiertos.gob.pe. Consulta la API directamente sin scraping.")
+        use_ckan = st.checkbox("⚡ Scraping directo del portal (más rápido)", value=False, help="Solo funciona con datosabiertos.gob.pe. Extrae datasets directamente de la página de búsqueda.")
 
         st.divider()
         st.info("💡 Si el sitio tiene Cloudflare o CAPTCHA, el navegador se hará visible automáticamente para que lo resuelvas (Solo válido para página inicial).")
@@ -111,7 +111,7 @@ def main():
                 # MODO CKAN DIRECTO (si está activo)
                 # ══════════════════════════════════════════════════
                 if use_ckan and "datosabiertos.gob.pe" in url:
-                    with st.spinner("Consultando API CKAN de datosabiertos.gob.pe ..."):
+                    with st.spinner("Extrayendo datasets de datosabiertos.gob.pe ..."):
                         ckan_filters = {}
                         if filter_format:
                             ckan_filters["format"] = filter_format[0]  # CKAN solo filtra un formato a la vez
@@ -121,10 +121,10 @@ def main():
                         ckan_data = fetch_ckan_datasets(url, max_results=100, filters=ckan_filters if ckan_filters else None)
 
                     if ckan_data is not None and len(ckan_data) > 0:
-                        st.success(f"✓ API CKAN: {len(ckan_data)} datasets encontrados.")
+                        st.success(f"✓ Portal: {len(ckan_data)} datasets encontrados.")
 
                         # Tabla resumen
-                        st.markdown("### 📊 Datasets encontrados via API CKAN")
+                        st.markdown("### 📊 Datasets encontrados en el portal")
                         table_rows = []
                         all_resource_urls = []
                         for ds in ckan_data:
@@ -145,7 +145,7 @@ def main():
 
                         # Descargar tabla como CSV
                         csv_ckan = df_ckan.to_csv(index=False)
-                        st.download_button("📥 Descargar tabla CKAN como CSV", data=csv_ckan, file_name="ckan_datasets.csv", mime="text/csv", use_container_width=True, key="ckan_csv")
+                        st.download_button("📥 Descargar tabla de datasets como CSV", data=csv_ckan, file_name="ckan_datasets.csv", mime="text/csv", use_container_width=True, key="ckan_csv")
 
                         # Descargar todos los recursos
                         if all_resource_urls:
@@ -189,9 +189,9 @@ def main():
                                 st.download_button("📦 Descargar Recursos CKAN (ZIP)", data=zip_data, file_name="ckan_recursos.zip", mime="application/zip", use_container_width=True, key="ckan_zip")
 
                     elif ckan_data is not None and len(ckan_data) == 0:
-                        st.warning("La API CKAN no devolvió resultados con los filtros actuales.")
+                        st.warning("No se encontraron datasets con los filtros actuales.")
                     else:
-                        st.warning("No se pudo conectar con la API CKAN. Cayendo al scraping normal...")
+                        st.warning("No se pudieron extraer datasets del portal. Cayendo al scraping normal...")
                         use_ckan_fallback = True
                     st.stop()
 

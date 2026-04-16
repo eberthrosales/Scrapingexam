@@ -186,7 +186,7 @@ def extract_deep_htmls(
         return asyncio.run(_async_deep_crawl(sorted_links, headers))
 
 
-# ─── API CKAN Nativa ─────────────────────────────────────────────────────────
+# ─── Scraping Directo del Portal datosabiertos.gob.pe ────────────────────────
 
 def fetch_ckan_datasets(
     base_url: str,
@@ -194,73 +194,138 @@ def fetch_ckan_datasets(
     filters: Optional[dict[str, str]] = None
 ) -> Optional[list[dict]]:
     """
-    Detecta si la URL es del dominio datosabiertos.gob.pe y, si es CKAN,
-    consulta la API REST para obtener datasets estructurados.
+    Extrae datasets del portal datosabiertos.gob.pe mediante scraping directo
+    del HTML de búsqueda (Drupal/DKAN). La API CKAN estándar no está disponible
+    en este portal.
 
     Retorna una lista de dicts con: title, description, organization,
     date_modified, resources (lista de dicts con url, format, name).
-    Si falla la API, retorna None silenciosamente.
+    Si falla, retorna None silenciosamente.
     """
-    # Solo activar para dominios CKAN conocidos
+    # Solo activar para dominios conocidos
     if "datosabiertos.gob.pe" not in base_url:
         return None
 
-    api_url = "https://www.datosabiertos.gob.pe/api/3/action/package_search"
-
-    params: dict[str, str | int] = {
-        "rows": max_results,
-    }
-
-    fq_parts: list[str] = []
-
-    if filters:
-        if filters.get("query"):
-            params["q"] = filters["query"]
-        if filters.get("format"):
-            fq_parts.append(f'res_format:"{filters["format"]}"')
-        if filters.get("organization"):
-            fq_parts.append(f'organization:"{filters["organization"]}"')
-        if filters.get("date_from"):
-            fq_parts.append(f'metadata_modified:[{filters["date_from"]}T00:00:00Z TO *]')
-
-    if fq_parts:
-        params["fq"] = " AND ".join(fq_parts)
-
     headers = build_crawler_headers()
+    search_url = "https://www.datosabiertos.gob.pe/search"
+
+    # Calcular cuántas páginas de búsqueda necesitamos (aprox 10 resultados por página)
+    results_per_page = 10
+    max_search_pages = min((max_results // results_per_page) + 1, 10)
+
+    all_dataset_links: list[dict] = []
 
     try:
-        response = requests.get(api_url, params=params, headers=headers, timeout=15)
-        if response.status_code != 200:
-            return None
+        for page_num in range(max_search_pages):
+            # Construir URL de paginación (Drupal: page=0,0 / page=0,1 / page=0,2 ...)
+            params: dict[str, str] = {}
+            if page_num > 0:
+                params["page"] = f"0,{page_num}"
 
-        data = response.json()
+            # Aplicar filtros si existen
+            if filters:
+                if filters.get("format"):
+                    params["f[0]"] = f'res_format:{filters["format"]}'
+                if filters.get("query"):
+                    params["query"] = filters["query"]
 
-        if not data.get("success"):
-            return None
+            response = requests.get(search_url, params=params, headers=headers, timeout=15)
+            if response.status_code != 200:
+                break
 
-        results: list[dict] = []
-        for pkg in data.get("result", {}).get("results", []):
-            org_name = ""
-            if pkg.get("organization"):
-                org_name = pkg["organization"].get("title", pkg["organization"].get("name", ""))
+            soup = BeautifulSoup(response.text, "html.parser")
 
-            resources: list[dict] = []
-            for res in pkg.get("resources", []):
-                resources.append({
-                    "url": res.get("url", ""),
-                    "format": res.get("format", ""),
-                    "name": res.get("name", res.get("description", "")),
+            # Cada resultado está en un div.views-row
+            rows = soup.select(".views-row")
+            if not rows:
+                break
+
+            for row in rows:
+                # Título y link al dataset
+                title_el = row.select_one("h2 a")
+                if not title_el:
+                    continue
+
+                title = title_el.get_text(strip=True)
+                dataset_path = title_el.get("href", "")
+                dataset_url = urljoin("https://www.datosabiertos.gob.pe", dataset_path)
+
+                # Organización
+                org_el = row.select_one(".views-field-field-organization")
+                organization = ""
+                if org_el:
+                    organization = org_el.get_text(strip=True)
+
+                # Descripción
+                desc_el = row.select_one(".views-field-body .field-content")
+                description = ""
+                if desc_el:
+                    description = desc_el.get_text(strip=True)
+
+                # Formatos disponibles (labels como csv, pdf, xls)
+                format_labels = row.select("a.label")
+                formats = [lbl.get_text(strip=True).upper() for lbl in format_labels]
+
+                all_dataset_links.append({
+                    "title": title,
+                    "description": description,
+                    "organization": organization,
+                    "date_modified": "",
+                    "formats_preview": formats,
+                    "dataset_url": dataset_url,
+                    "resources": [],
                 })
 
-            results.append({
-                "title": pkg.get("title", ""),
-                "description": pkg.get("notes", ""),
-                "organization": org_name,
-                "date_modified": pkg.get("metadata_modified", ""),
-                "resources": resources,
-            })
+            if len(all_dataset_links) >= max_results:
+                break
 
-        return results
+            time.sleep(0.3)  # Pausa cortés
+
+        # Ahora visitamos cada página de dataset para encontrar los links reales de descarga
+        for ds in all_dataset_links:
+            try:
+                resp = requests.get(ds["dataset_url"], headers=headers, timeout=10)
+                if resp.status_code != 200:
+                    continue
+
+                ds_soup = BeautifulSoup(resp.text, "html.parser")
+
+                # Buscar links de descarga reales en la página del dataset
+                # Los recursos suelen estar en links con texto "Descargar" o extensiones de archivo
+                resource_links = set()
+
+                for a in ds_soup.find_all("a", href=True):
+                    href = a.get("href", "")
+                    texto = a.get_text(strip=True).lower()
+                    full_url = urljoin(ds["dataset_url"], href)
+
+                    # Detectar por extensión
+                    path_lower = urlparse(full_url).path.lower()
+                    if path_lower.endswith(('.csv', '.pdf', '.xls', '.xlsx', '.json', '.xml',
+                                           '.zip', '.doc', '.docx', '.ppt', '.pptx', '.txt')):
+                        resource_links.add(full_url)
+                    # O por texto semántico
+                    elif any(kw in texto for kw in ['descargar', 'download', 'ver recurso']):
+                        if not full_url.startswith('javascript:'):
+                            resource_links.add(full_url)
+                    # O por atributo download
+                    elif "download" in a.attrs:
+                        resource_links.add(full_url)
+
+                for r_url in resource_links:
+                    fname = r_url.rsplit("/", 1)[-1] if "/" in r_url else "archivo"
+                    ext = fname.rsplit(".", 1)[-1].upper() if "." in fname else "DESCONOCIDO"
+                    ds["resources"].append({
+                        "url": r_url,
+                        "format": ext,
+                        "name": fname,
+                    })
+
+            except Exception:
+                continue
+
+        return all_dataset_links if all_dataset_links else None
 
     except Exception:
         return None
+
